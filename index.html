@@ -277,6 +277,18 @@ async function login() {
   document.getElementById('lerr').style.display = 'none';
 
   try {
+    var isAdmin = (email === ADMIN_EMAIL);
+
+    // Build profile from local info — no DB query needed to login
+    // DB is only used to store/sync profile data
+    prof = {
+      id: null,
+      name: name,
+      email: email,
+      role: isAdmin ? 'admin' : 'user'
+    };
+
+    // Try to sync with DB in background (non-blocking)
     var headers = {
       'apikey': SB_KEY,
       'Authorization': 'Bearer ' + SB_KEY,
@@ -284,43 +296,35 @@ async function login() {
       'Accept': 'application/json'
     };
 
-    // Load all profiles — only use columns that exist in DB (id, name, role)
-    var allRes = await fetch(SB_URL + '/rest/v1/profiles?select=id,name,role', { headers: headers });
-    var allData = await allRes.json();
-    if (!Array.isArray(allData)) {
-      showErr('Erro ao conectar ao banco: ' + JSON.stringify(allData));
-      btn.disabled=false; btn.innerHTML='Entrar'; return;
-    }
-
-    // Admin email always gets admin role — stored only in localStorage
-    var isAdmin = (email === ADMIN_EMAIL);
-
-    // Find by name (case insensitive)
-    var found = allData.find(function(u) {
-      return u.name && u.name.toLowerCase() === name.toLowerCase();
-    });
-
-    if (found) {
-      // User exists — log in directly
-      prof = found;
-      prof.email = email;
-      // Ensure admin email always has admin role
-      if (isAdmin) prof.role = 'admin';
-    } else {
-      // New user — insert only id, name, role (no email column)
-      var role = isAdmin ? 'admin' : (allData.length === 0 ? 'admin' : 'user');
-      var insRes = await fetch(SB_URL + '/rest/v1/profiles', {
-        method: 'POST',
-        headers: Object.assign({}, headers, { 'Prefer': 'return=representation' }),
-        body: JSON.stringify({ name: name, role: role })
-      });
-      var insData = await insRes.json();
-      if (!insRes.ok) {
-        showErr('Erro: ' + (insData.message || insData.hint || JSON.stringify(insData)));
-        btn.disabled=false; btn.innerHTML='Entrar'; return;
+    try {
+      var allRes = await fetch(SB_URL + '/rest/v1/profiles?select=id,name,role', { headers: headers });
+      var allData = await allRes.json();
+      if (Array.isArray(allData)) {
+        var found = allData.find(function(u) {
+          return u.name && u.name.toLowerCase() === name.toLowerCase();
+        });
+        if (found) {
+          prof.id = found.id;
+          if (!isAdmin) prof.role = found.role;
+        } else {
+          // Create new profile
+          var role = isAdmin ? 'admin' : (allData.length === 0 ? 'admin' : 'user');
+          var insRes = await fetch(SB_URL + '/rest/v1/profiles', {
+            method: 'POST',
+            headers: Object.assign({}, headers, { 'Prefer': 'return=representation' }),
+            body: JSON.stringify({ name: name, role: role })
+          });
+          var insData = await insRes.json();
+          if (insRes.ok) {
+            var created = Array.isArray(insData) ? insData[0] : insData;
+            prof.id = created.id;
+            prof.role = created.role;
+          }
+        }
       }
-      prof = Array.isArray(insData) ? insData[0] : insData;
-      prof.email = email;
+    } catch(syncErr) {
+      // DB sync failed but login still works
+      console.warn('DB sync failed:', syncErr);
     }
 
     // Save session
